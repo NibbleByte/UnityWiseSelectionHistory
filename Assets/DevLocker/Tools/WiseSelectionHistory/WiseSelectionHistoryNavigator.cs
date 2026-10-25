@@ -141,6 +141,29 @@ namespace DevLocker.Tools
 			HistoryChanged?.Invoke();
 		}
 
+		/// <summary>Moves a history entry to a new position. The current entry stays current wherever it ends up.</summary>
+		internal static void MoveEntry(int from, int to)
+		{
+			var state = instance;
+			var history = state.m_History;
+			if (from == to || from < 0 || from >= history.Count || to < 0 || to >= history.Count)
+				return;
+
+			var entry = history[from];
+			history.RemoveAt(from);
+			history.Insert(to, entry);
+
+			if (state.m_Index == from) {
+				state.m_Index = to;
+			} else if (from < state.m_Index && to >= state.m_Index) {
+				state.m_Index--;
+			} else if (from > state.m_Index && to <= state.m_Index) {
+				state.m_Index++;
+			}
+
+			HistoryChanged?.Invoke();
+		}
+
 		/// <summary>
 		/// Selects the entry at <paramref name="i"/> and makes it current. If none of its objects
 		/// exist any more, removes the entry instead and returns false.
