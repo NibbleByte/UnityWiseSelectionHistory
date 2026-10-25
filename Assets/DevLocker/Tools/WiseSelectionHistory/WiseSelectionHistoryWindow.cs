@@ -14,12 +14,17 @@ namespace DevLocker.Tools
 		private bool m_ScrollToEnd;
 		private GUIStyle m_EntryStyle;
 
-		// Drag to reorder. Rects are from the last non-layout pass, in scroll view coordinates.
+		// Dragging an entry starts a regular Unity drag of its objects, so it can be dropped anywhere
+		// Unity accepts objects (scene, hierarchy, object fields, ...). Dropping it back on this window reorders.
+		// The generic data marks our own drags and carries the dragged entry's index.
+		private const string DragDataKey = "WiseSelectionHistoryEntryIndex";
+
+		// Rects are from the last non-layout pass, in scroll view coordinates.
 		private readonly List<Rect> m_EntryRects = new List<Rect>();
 		private int m_PressedIndex = -1;
 		private Vector2 m_PressedPosition;
-		private bool m_Dragging;
-		private int m_DropIndex = -1; // insertion slot, 0..HistoryCount
+		private int m_DragFromIndex = -1; // set while one of our drags hovers this window
+		private int m_DropIndex = -1;     // insertion slot, 0..HistoryCount
 
 		[MenuItem("Edit/Selection/History Window", priority = 320)]
 		static void Open() => GetWindow<WiseSelectionHistoryWindow>("Selection History");
@@ -97,9 +102,8 @@ namespace DevLocker.Tools
 				EditorGUILayout.BeginHorizontal();
 			}
 
-			// Handled before the buttons, so they never see the drag's MouseDrag / MouseUp.
-			int dragControlId = GUIUtility.GetControlID(FocusType.Passive);
-			HandleDrag(dragControlId, vertical, ref moveFrom, ref moveTo);
+			// Handled before the buttons, so they never see the drag's events.
+			HandleDrag(vertical, ref moveFrom, ref moveTo);
 
 			var evt = Event.current;
 			bool recordRects = evt.type != EventType.Layout; // layout pass only returns placeholder rects
@@ -122,7 +126,7 @@ namespace DevLocker.Tools
 					GUI.backgroundColor = new Color(0.65f, 0.85f, 1f);
 				}
 
-				if (m_Dragging && i == m_PressedIndex) {
+				if (i == m_DragFromIndex) {
 					GUI.color = new Color(prevColor.r, prevColor.g, prevColor.b, prevColor.a * 0.4f);
 				}
 
@@ -150,7 +154,7 @@ namespace DevLocker.Tools
 				GUI.color = prevColor;
 			}
 
-			if (m_Dragging && evt.type == EventType.Repaint) {
+			if (m_DragFromIndex >= 0 && evt.type == EventType.Repaint) {
 				DrawDropMarker(vertical);
 			}
 
@@ -185,60 +189,76 @@ namespace DevLocker.Tools
 			}
 		}
 
-		private void HandleDrag(int controlId, bool vertical, ref int moveFrom, ref int moveTo)
+		private void HandleDrag(bool vertical, ref int moveFrom, ref int moveTo)
 		{
 			var evt = Event.current;
 
-			if (m_Dragging && GUIUtility.hotControl != controlId) {
-				// Lost the mouse capture somehow (focus change, etc.).
-				StopDragging();
-			}
-
 			switch (evt.type) {
 				case EventType.MouseDrag:
-					if (!m_Dragging && m_PressedIndex >= 0 && m_PressedIndex < m_EntryRects.Count
+					if (m_PressedIndex >= 0 && m_PressedIndex < WiseSelectionHistoryNavigator.HistoryCount
 						&& Vector2.Distance(evt.mousePosition, m_PressedPosition) > 6f) {
-						// Steal the capture from the pressed button, so releasing the mouse won't count as a click.
-						m_Dragging = true;
-						GUIUtility.hotControl = controlId;
-					}
-
-					if (m_Dragging) {
-						m_DropIndex = GetDropIndex(evt.mousePosition, vertical);
+						StartEntryDrag(m_PressedIndex);
+						m_PressedIndex = -1;
 						evt.Use();
-						Repaint();
 					}
 					break;
 
-				case EventType.MouseUp:
-					if (m_Dragging) {
+				case EventType.DragUpdated:
+				case EventType.DragPerform:
+					if (!(DragAndDrop.GetGenericData(DragDataKey) is int from)) {
+						break; // someone else's drag; not accepted here
+					}
+
+					m_DragFromIndex = from;
+					m_DropIndex = GetDropIndex(evt.mousePosition, vertical);
+					DragAndDrop.visualMode = DragAndDropVisualMode.Move;
+
+					if (evt.type == EventType.DragPerform) {
+						DragAndDrop.AcceptDrag();
+
 						// Removing the entry first shifts every later slot down by one.
-						int to = m_DropIndex > m_PressedIndex ? m_DropIndex - 1 : m_DropIndex;
-						if (to != m_PressedIndex) {
-							moveFrom = m_PressedIndex;
+						int to = m_DropIndex > from ? m_DropIndex - 1 : m_DropIndex;
+						if (to != from) {
+							moveFrom = from;
 							moveTo = to;
 						}
-						StopDragging();
-						evt.Use();
+						ClearDropState();
 					}
+
+					evt.Use();
+					Repaint();
 					break;
 
-				case EventType.KeyDown:
-					if (m_Dragging && evt.keyCode == KeyCode.Escape) {
-						StopDragging();
-						evt.Use();
-					}
+				case EventType.DragExited:
+					// Left the window, dropped, or cancelled with Esc.
+					ClearDropState();
 					break;
 			}
 		}
 
-		private void StopDragging()
+		private void StartEntryDrag(int index)
 		{
-			if (m_Dragging) {
-				GUIUtility.hotControl = 0;
-			}
-			m_Dragging = false;
-			m_PressedIndex = -1;
+			var objects = WiseSelectionHistoryNavigator.GetHistoryEntry(index).Where(o => o != null).ToArray();
+			if (objects.Length == 0)
+				return;
+
+			// The pressed button still holds the mouse capture; release it so it doesn't linger as pressed.
+			GUIUtility.hotControl = 0;
+
+			DragAndDrop.PrepareStartDrag();
+			DragAndDrop.objectReferences = objects;
+			// Asset paths let windows that work with files (e.g. the Project window) accept the drag too.
+			DragAndDrop.paths = objects
+				.Select(AssetDatabase.GetAssetPath)
+				.Where(path => !string.IsNullOrEmpty(path))
+				.ToArray();
+			DragAndDrop.SetGenericData(DragDataKey, index);
+			DragAndDrop.StartDrag(objects.Length > 1 ? $"{objects[0].name} ({objects.Length})" : objects[0].name);
+		}
+
+		private void ClearDropState()
+		{
+			m_DragFromIndex = -1;
 			m_DropIndex = -1;
 			Repaint();
 		}
