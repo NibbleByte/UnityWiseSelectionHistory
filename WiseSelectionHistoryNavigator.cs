@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using Object = UnityEngine.Object;
 #if UNITY_EDITOR_WIN
@@ -51,13 +52,19 @@ namespace DevLocker.Tools
 			// `instance` at that point would create a second, empty one.
 			EditorApplication.delayCall += OnSelectionChanged;
 
+			// Closing a scene destroys its objects, and reopening it creates new ones, so entries
+			// pointing at them can't recover. Clean them up whenever scenes change.
+			EditorSceneManager.sceneClosed += _ => ScheduleRemoveMissing();
+			EditorSceneManager.sceneOpened += (_, __) => ScheduleRemoveMissing();
+			EditorSceneManager.newSceneCreated += (_, __, ___) => ScheduleRemoveMissing();
+
 #if UNITY_EDITOR_WIN
 			EditorApplication.update += PollMouseButtons;
 #else
-		// Non-Windows fallback: catch the IMGUI mouse events in the most common windows.
-		SceneView.duringSceneGui += _ => HandleEvent(Event.current);
-		EditorApplication.hierarchyWindowItemOnGUI += (_, __) => HandleEvent(Event.current);
-		EditorApplication.projectWindowItemOnGUI += (_, __) => HandleEvent(Event.current);
+			// Non-Windows fallback: catch the IMGUI mouse events in the most common windows.
+			SceneView.duringSceneGui += _ => HandleEvent(Event.current);
+			EditorApplication.hierarchyWindowItemOnGUI += (_, __) => HandleEvent(Event.current);
+			EditorApplication.projectWindowItemOnGUI += (_, __) => HandleEvent(Event.current);
 #endif
 		}
 
@@ -213,6 +220,24 @@ namespace DevLocker.Tools
 		}
 
 		static bool IsMissing(Entry entry) => entry.objects.All(o => o == null);
+
+		static bool s_RemoveMissingScheduled;
+
+		/// <summary>
+		/// Runs <see cref="RemoveMissing"/> once after the current editor update. Opening a scene fires
+		/// several events (closed, opened, ...) and the objects are only gone after they're done.
+		/// </summary>
+		static void ScheduleRemoveMissing()
+		{
+			if (s_RemoveMissingScheduled)
+				return;
+
+			s_RemoveMissingScheduled = true;
+			EditorApplication.delayCall += () => {
+				s_RemoveMissingScheduled = false;
+				RemoveMissing();
+			};
+		}
 
 		internal static void ClearHistory()
 		{

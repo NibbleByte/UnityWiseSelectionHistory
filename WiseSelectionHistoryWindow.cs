@@ -107,9 +107,6 @@ namespace DevLocker.Tools
 			var prevBackground = GUI.backgroundColor;
 			var prevColor = GUI.color;
 
-			var options = vertical
-				? new[] { GUILayout.ExpandWidth(true) }
-				: new[] { GUILayout.ExpandWidth(false), GUILayout.MaxWidth(160f) };
 
 			// Pinned entries: always visible, outside the scroll view.
 			// Tinted green to set them apart from the history.
@@ -136,7 +133,7 @@ namespace DevLocker.Tools
 						GUI.color = new Color(prevColor.r, prevColor.g, prevColor.b, prevColor.a * 0.4f);
 					}
 
-					var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, options);
+					var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, GetEntryOptions(content, vertical));
 					if (recordPinRects) {
 						m_PinRects.Add(rect);
 					}
@@ -207,7 +204,7 @@ namespace DevLocker.Tools
 				}
 
 				var content = GetContent(objects, first);
-				var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, options);
+				var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, GetEntryOptions(content, vertical));
 				if (recordRects) {
 					m_EntryRects.Add(rect);
 				}
@@ -235,6 +232,8 @@ namespace DevLocker.Tools
 			if (vertical) {
 				EditorGUILayout.EndVertical();
 			} else {
+				// Takes up the leftover width, keeping the entries on the left.
+				GUILayout.FlexibleSpace();
 				EditorGUILayout.EndHorizontal();
 			}
 
@@ -330,6 +329,19 @@ namespace DevLocker.Tools
 					ClearDropState();
 					break;
 			}
+		}
+
+		/// <summary>
+		/// Vertical: full width. Horizontal: a fixed width (natural size, capped), so the layout has no
+		/// leftover range to spread across the buttons and they stay packed on the left.
+		/// </summary>
+		private GUILayoutOption[] GetEntryOptions(GUIContent content, bool vertical)
+		{
+			if (vertical)
+				return new[] { GUILayout.ExpandWidth(true) };
+
+			float width = Mathf.Min(m_EntryStyle.CalcSize(content).x, 160f);
+			return new[] { GUILayout.Width(width) };
 		}
 
 		/// <summary>Same as <see cref="HandleDrag"/>, for the pinned entries.</summary>
