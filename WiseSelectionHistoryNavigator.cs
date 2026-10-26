@@ -141,6 +141,86 @@ namespace DevLocker.Tools
 			HistoryChanged?.Invoke();
 		}
 
+		internal static void RemoveEntry(int index)
+		{
+			var state = instance;
+			if (index < 0 || index >= state.m_History.Count)
+				return;
+
+			state.m_History.RemoveAt(index);
+			if (index < state.m_Index || state.m_Index >= state.m_History.Count) {
+				state.m_Index--;
+			}
+
+			HistoryChanged?.Invoke();
+		}
+
+		/// <summary>
+		/// Removes entries holding the same objects as a newer entry, so only the newest copy of each stays.
+		/// If the current entry is removed, its newer copy becomes current.
+		/// </summary>
+		internal static void RemoveDuplicates()
+		{
+			var state = instance;
+			var history = state.m_History;
+			var kept = new List<Entry>();
+			var keptSets = new List<HashSet<Object>>();
+			Entry current = state.m_Index >= 0 ? history[state.m_Index] : null;
+
+			for (int i = history.Count - 1; i >= 0; i--) {
+				var set = new HashSet<Object>(history[i].objects.Where(o => o != null));
+				int existing = keptSets.FindIndex(s => s.SetEquals(set));
+				if (existing >= 0) {
+					if (history[i] == current) {
+						current = kept[existing];
+					}
+					continue;
+				}
+
+				kept.Add(history[i]);
+				keptSets.Add(set);
+			}
+
+			kept.Reverse();
+			history.Clear();
+			history.AddRange(kept);
+			state.m_Index = history.IndexOf(current);
+
+			HistoryChanged?.Invoke();
+		}
+
+		/// <summary>
+		/// Removes entries whose objects were all destroyed (shown as "(missing)").
+		/// If the current entry is removed, the closest older entry becomes current (or the closest newer one).
+		/// </summary>
+		internal static void RemoveMissing()
+		{
+			var state = instance;
+			var history = state.m_History;
+
+			// Count the surviving entries up to and including the current one; the last of them is the new current.
+			int survivorsUpToCurrent = 0;
+			for (int i = 0; i <= state.m_Index && i < history.Count; i++) {
+				if (!IsMissing(history[i])) {
+					survivorsUpToCurrent++;
+				}
+			}
+
+			history.RemoveAll(IsMissing);
+			state.m_Index = history.Count == 0 ? -1 : Mathf.Max(survivorsUpToCurrent - 1, 0);
+
+			HistoryChanged?.Invoke();
+		}
+
+		static bool IsMissing(Entry entry) => entry.objects.All(o => o == null);
+
+		internal static void ClearHistory()
+		{
+			instance.m_History.Clear();
+			instance.m_Index = -1;
+			HistoryChanged?.Invoke();
+		}
+
 		/// <summary>Moves a history entry to a new position. The current entry stays current wherever it ends up.</summary>
 		internal static void MoveEntry(int from, int to)
 		{
