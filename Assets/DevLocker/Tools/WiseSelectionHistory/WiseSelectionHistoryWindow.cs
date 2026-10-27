@@ -12,6 +12,7 @@ namespace DevLocker.Tools
 	{
 		private Vector2 m_Scroll;
 		private bool m_ScrollToEnd;
+		private float m_HistoryViewWidth; // width of the history scroll view, from the last Repaint
 		private GUIStyle m_EntryStyle;
 		private static readonly Color HistorySelectedTint = Color.yellow;
 		private static readonly Color HistorySceneTint = new Color(0.65f, 0.85f, 1f);
@@ -34,6 +35,8 @@ namespace DevLocker.Tools
 		private Vector2 m_PressedPosition;
 		private int m_DragFromIndex = -1; // set while one of our drags hovers this window
 		private int m_DropIndex = -1;     // insertion slot, 0..HistoryCount
+
+		private const float MaxEntryWidth = 160f; // also the fixed width of all entries when there are several rows
 
 		[MenuItem("Edit/Selection/History Window", priority = 320)]
 		static void Open() => GetWindow<WiseSelectionHistoryWindow>("Selection History");
@@ -63,6 +66,10 @@ namespace DevLocker.Tools
 				m_EntryStyle = new GUIStyle(GUI.skin.button) { alignment = TextAnchor.MiddleLeft };			}
 
 			bool vertical = position.height >= position.width;
+
+			// Horizontal windows taller than one line split each list into rows of fixed width entries.
+			int rowCount = vertical ? 1 : GetRowCount();
+			bool grid = rowCount > 1;
 
 			// Forget the last pressed entry on any press, before the arrow buttons can consume it.
 			// The entry under the mouse (if any) sets it again below.
@@ -113,6 +120,8 @@ namespace DevLocker.Tools
 			if (WiseSelectionHistoryPins.Count > 0) {
 				if (vertical) {
 					EditorGUILayout.BeginVertical();
+				} else if (grid) {
+					EditorGUILayout.BeginVertical(GUILayout.ExpandWidth(false));
 				} else {
 					EditorGUILayout.BeginHorizontal(GUILayout.ExpandWidth(false));
 				}
@@ -124,7 +133,13 @@ namespace DevLocker.Tools
 					m_PinRects.Clear();
 				}
 
+				int pinColumns = GetColumnCount(WiseSelectionHistoryPins.Count, rowCount);
+
 				for (int i = 0; i < WiseSelectionHistoryPins.Count; i++) {
+					if (grid) {
+						BeginGridRow(i, pinColumns, false);
+					}
+
 					// Drawn from the info stored with the pin; the objects are only loaded when used.
 					var content = WiseSelectionHistoryPins.GetContent(i);
 					GUI.backgroundColor = WiseSelectionHistoryPins.IsSceneObject(i) ? ScenePinTint : PinTint;
@@ -133,7 +148,7 @@ namespace DevLocker.Tools
 						GUI.color = new Color(prevColor.r, prevColor.g, prevColor.b, prevColor.a * 0.4f);
 					}
 
-					var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, GetEntryOptions(content, vertical));
+					var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, GetEntryOptions(content, vertical, grid));
 					if (recordPinRects) {
 						m_PinRects.Add(rect);
 					}
@@ -160,19 +175,18 @@ namespace DevLocker.Tools
 				if (vertical) {
 					EditorGUILayout.EndVertical();
 					GUILayout.Space(6f);
+				} else if (grid) {
+					EndGridRows(WiseSelectionHistoryPins.Count, false);
+					EditorGUILayout.EndVertical();
+					GUILayout.Space(6f);
 				} else {
 					EditorGUILayout.EndHorizontal();
 					GUILayout.Space(6f);
 				}
 			}
 
-			// The scroll view clamps this to the content size, so it lands on the last entry
-			// in whichever direction the list currently runs.
-			if (m_ScrollToEnd)
-				m_Scroll = new Vector2(float.MaxValue, float.MaxValue);
-
 			m_Scroll = EditorGUILayout.BeginScrollView(m_Scroll);
-			if (vertical) {
+			if (vertical || grid) {
 				EditorGUILayout.BeginVertical();
 			} else {
 				EditorGUILayout.BeginHorizontal();
@@ -187,8 +201,17 @@ namespace DevLocker.Tools
 			}
 
 			int current = WiseSelectionHistoryNavigator.CurrentIndex;
+			int historyCount = WiseSelectionHistoryNavigator.HistoryCount;
+			// Fill the visible width before starting another row, then spread evenly once the rows overflow.
+			float columnWidth = MaxEntryWidth + Mathf.Max(m_EntryStyle.margin.left, m_EntryStyle.margin.right);
+			int visibleColumns = Mathf.FloorToInt(m_HistoryViewWidth / columnWidth);
+			int columns = Mathf.Max(GetColumnCount(historyCount, rowCount), visibleColumns);
 
-			for (int i = 0; i < WiseSelectionHistoryNavigator.HistoryCount; i++) {
+			for (int i = 0; i < historyCount; i++) {
+				if (grid) {
+					BeginGridRow(i, columns, true);
+				}
+
 				var objects = WiseSelectionHistoryNavigator.GetHistoryEntry(i);
 				var first = objects.FirstOrDefault(o => o != null);
 				bool isScene = first != null && !EditorUtility.IsPersistent(first);
@@ -204,9 +227,15 @@ namespace DevLocker.Tools
 				}
 
 				var content = GetContent(objects, first);
-				var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, GetEntryOptions(content, vertical));
+				var rect = GUILayoutUtility.GetRect(content, m_EntryStyle, GetEntryOptions(content, vertical, grid));
 				if (recordRects) {
 					m_EntryRects.Add(rect);
+				}
+
+				// Only new selections scroll; the last entry may sit in a short last row, so scroll to it rather than to the end.
+				if (m_ScrollToEnd && evt.type == EventType.Repaint && i == historyCount - 1) {
+					GUI.ScrollTo(rect);
+					Repaint(); // the scroll view applies it on the next pass
 				}
 
 				HandleContextClick(rect, i, -1);
@@ -231,6 +260,9 @@ namespace DevLocker.Tools
 
 			if (vertical) {
 				EditorGUILayout.EndVertical();
+			} else if (grid) {
+				EndGridRows(historyCount, true);
+				EditorGUILayout.EndVertical();
 			} else {
 				// Takes up the leftover width, keeping the entries on the left.
 				GUILayout.FlexibleSpace();
@@ -239,13 +271,22 @@ namespace DevLocker.Tools
 
 			EditorGUILayout.EndScrollView();
 
+			// The view width is only known after layout; when it changes, redo the rows with the new one.
+			if (evt.type == EventType.Repaint) {
+				float viewWidth = GUILayoutUtility.GetLastRect().width;
+				if (!Mathf.Approximately(viewWidth, m_HistoryViewWidth)) {
+					m_HistoryViewWidth = viewWidth;
+					Repaint();
+				}
+			}
+
 			if (vertical) {
 				EditorGUILayout.EndVertical();
 			} else {
 				EditorGUILayout.EndHorizontal();
 			}
 
-			// The content size is only known by the Repaint pass, so keep forcing the scroll until then.
+			// Entry rects are only known by the Repaint pass, so keep the request until then.
 			if (Event.current.type == EventType.Repaint)
 				m_ScrollToEnd = false;
 
@@ -334,14 +375,57 @@ namespace DevLocker.Tools
 		/// <summary>
 		/// Vertical: full width. Horizontal: a fixed width (natural size, capped), so the layout has no
 		/// leftover range to spread across the buttons and they stay packed on the left.
+		/// Several rows: the same width for all, so the rows line up in columns.
 		/// </summary>
-		private GUILayoutOption[] GetEntryOptions(GUIContent content, bool vertical)
+		private GUILayoutOption[] GetEntryOptions(GUIContent content, bool vertical, bool grid)
 		{
 			if (vertical)
 				return new[] { GUILayout.ExpandWidth(true) };
 
-			float width = Mathf.Min(m_EntryStyle.CalcSize(content).x, 160f);
+			float width = grid ? MaxEntryWidth : Mathf.Min(m_EntryStyle.CalcSize(content).x, MaxEntryWidth);
 			return new[] { GUILayout.Width(width) };
+		}
+
+		/// <summary>How many rows of entries fit in the window's height, leaving room for the horizontal scroll bar.</summary>
+		private int GetRowCount()
+		{
+			// A button is as tall as its text or its 16px icon, whichever is taller. Margins between rows overlap.
+			float buttonHeight = Mathf.Max(m_EntryStyle.CalcSize(new GUIContent("X")).y, 16f + m_EntryStyle.padding.vertical);
+			float margin = Mathf.Max(m_EntryStyle.margin.top, m_EntryStyle.margin.bottom);
+			float scrollBar = GUI.skin.horizontalScrollbar.fixedHeight + GUI.skin.horizontalScrollbar.margin.vertical;
+
+			float available = position.height - scrollBar - margin;
+			return Mathf.Max(1, Mathf.FloorToInt(available / (buttonHeight + margin)));
+		}
+
+		/// <summary>Entries per row, spread evenly over the rows. The last row may have fewer.</summary>
+		private static int GetColumnCount(int count, int rowCount) => Mathf.Max(1, Mathf.CeilToInt(count / (float)rowCount));
+
+		/// <summary>
+		/// Starts a new row before every <paramref name="columns"/>-th entry, closing the previous one.
+		/// <paramref name="fill"/> pads the row's end, keeping the entries on the left of a wider area.
+		/// Not for the pins: their group would stretch with it and push the history to the right.
+		/// </summary>
+		private static void BeginGridRow(int index, int columns, bool fill)
+		{
+			if (index % columns != 0)
+				return;
+
+			if (index > 0) {
+				EndGridRows(index, fill);
+			}
+			EditorGUILayout.BeginHorizontal();
+		}
+
+		private static void EndGridRows(int count, bool fill)
+		{
+			if (count == 0)
+				return;
+
+			if (fill) {
+				GUILayout.FlexibleSpace();
+			}
+			EditorGUILayout.EndHorizontal();
 		}
 
 		/// <summary>Same as <see cref="HandleDrag"/>, for the pinned entries.</summary>
@@ -546,15 +630,23 @@ namespace DevLocker.Tools
 		/// <summary>The slot between entries closest to <paramref name="mousePosition"/>, from 0 (before the first) to the entry count (after the last).</summary>
 		private static int GetDropIndex(List<Rect> rects, Vector2 mousePosition, bool vertical)
 		{
-			int index = 0;
+			if (vertical)
+				return rects.Count(rect => mousePosition.y > rect.center.y);
+
+			if (rects.Count == 0)
+				return 0;
+
+			// Horizontal entries run in rows. The mouse belongs to the last row starting above it (or the first row);
+			// entries in rows before it, and those left of the mouse in it, come before the slot.
+			float rowY = rects[0].yMin;
 			foreach (var rect in rects) {
-				float center = vertical ? rect.center.y : rect.center.x;
-				float mouse = vertical ? mousePosition.y : mousePosition.x;
-				if (mouse > center) {
-					index++;
+				if (rect.yMin <= mousePosition.y) {
+					rowY = Mathf.Max(rowY, rect.yMin);
 				}
 			}
-			return index;
+
+			return rects.Count(rect => rect.yMin < rowY - 0.5f
+				|| (Mathf.Abs(rect.yMin - rowY) <= 0.5f && mousePosition.x > rect.center.x));
 		}
 
 		private static void DrawDropMarker(List<Rect> rects, int dropIndex, bool vertical)
