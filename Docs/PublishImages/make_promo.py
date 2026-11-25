@@ -173,7 +173,59 @@ def make_backgrounds():
         gradient(w, h, BG_TOP, BG_BOTTOM).save(os.path.join(OUT, f"Background{w}x{h}.png"))
 
 
+def side_arrow(d, cx, cy, size, direction, line):
+    """Chunky arrow (shaft and head) pointing left (-1) or right (+1), with a dark outline."""
+    s = size / 2
+    shaft = s * 0.34
+    neck = s * 0.05 * direction
+    points = [
+        (cx + s * direction, cy),
+        (cx + neck, cy - s * 0.7),
+        (cx + neck, cy - shaft),
+        (cx - s * direction, cy - shaft),
+        (cx - s * direction, cy + shaft),
+        (cx + neck, cy + shaft),
+        (cx + neck, cy + s * 0.7),
+    ]
+    # PIL's polygon outline leaves gaps at the inner corners (between shaft and head),
+    # so draw the outline as a thick line with round joints underneath the fill.
+    d.line(points + points[:1], fill=INK, width=round(line), joint="curve")
+    for x, y in points:  # the closing point gets no joint
+        d.ellipse([x - line / 2, y - line / 2, x + line / 2, y + line / 2], fill=INK)
+    d.polygon(points, fill=CURRENT_YELLOW)
+
+
+def make_mouse():
+    """Top-down mouse with its Back / Forward side buttons highlighted, on a transparent background."""
+    n = 512 * SS
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    line = 14 * SS
+
+    # Body, with the left / right button split and the wheel.
+    left, top, right, bottom = 210 * SS, 56 * SS, 450 * SS, 456 * SS
+    cx = (left + right) / 2
+    d.rounded_rectangle([left, top, right, bottom], radius=(right - left) / 2, fill=RING, outline=INK, width=line)
+    split = 216 * SS
+    d.line([(cx, top), (cx, split)], fill=INK, width=round(line * 0.7))
+    d.line([(left, split), (right, split)], fill=INK, width=round(line * 0.7))
+    wheel = 18 * SS
+    d.rounded_rectangle([cx - wheel, 106 * SS, cx + wheel, 172 * SS], radius=wheel, fill=PILL_GREY, outline=INK, width=round(line * 0.7))
+
+    # Side buttons, sticking out of the left edge: Forward in front, Back behind it.
+    rows = ((272 * SS, +1), (364 * SS, -1))  # (center y, arrow direction)
+    for y, direction in rows:
+        bh = 70 * SS
+        d.rounded_rectangle([left - 36 * SS, y - bh / 2, left + 26 * SS, y + bh / 2], radius=18 * SS,
+                            fill=CURRENT_YELLOW, outline=INK, width=line)
+        # Nudged apart a little, so the two arrow heads don't touch.
+        side_arrow(d, 96 * SS, y - 8 * SS * direction, 112 * SS, direction, line)
+
+    img.resize((512, 512), Image.LANCZOS).save(os.path.join(OUT, "MouseButtons-512.png"))
+
+
 if __name__ == "__main__":
     make_icon()
     make_card()
     make_backgrounds()
+    make_mouse()
